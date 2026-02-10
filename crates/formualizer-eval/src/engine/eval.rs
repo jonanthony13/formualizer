@@ -1607,6 +1607,13 @@ where
         self.graph.get_cell_value(sheet, row, col)
     }
 
+    /// Analyze the dependency graph topology, returning per-cell classifications
+    /// and per-sheet/model summaries. `top_n` controls how many top drivers/outputs
+    /// are returned.
+    pub fn analyze_topology(&self, top_n: usize) -> super::topology::TopologyAnalysis {
+        super::topology::analyze(&self.graph, top_n)
+    }
+
     /// Get formula AST (if any) and current stored value for a cell
     pub fn get_cell(
         &self,

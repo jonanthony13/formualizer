@@ -12,6 +12,7 @@ pub mod plan;
 pub mod range_view;
 pub mod scheduler;
 pub mod spill;
+pub mod topology;
 pub mod vertex;
 
 // New SoA modules

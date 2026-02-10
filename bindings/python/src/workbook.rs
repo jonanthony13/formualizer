@@ -331,6 +331,53 @@ impl PyWorkbook {
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Full topology analysis — returns dict with cells, sheets, model summaries.
+    #[pyo3(signature = (top_n = 20))]
+    pub fn analyze_topology(&self, py: Python<'_>, top_n: usize) -> PyResult<PyObject> {
+        let wb = self
+            .inner
+            .read()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("lock: {e}")))?;
+        let topo = wb.engine().analyze_topology(top_n);
+        topology_to_py(py, &topo)
+    }
+
+    /// Single-cell topology query — returns dict or None.
+    pub fn cell_topology(
+        &self,
+        py: Python<'_>,
+        sheet: &str,
+        row: u32,
+        col: u32,
+    ) -> PyResult<Option<PyObject>> {
+        let wb = self
+            .inner
+            .read()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("lock: {e}")))?;
+        // Run full analysis with unlimited top_n so all cells appear in sheet summaries
+        let full = wb.engine().analyze_topology(usize::MAX);
+        // Search through cells list (key_drivers + summary_outputs)
+        for cell in &full.cells {
+            if cell.sheet == sheet && cell.row == row && cell.col == col {
+                return Ok(Some(cell_topology_to_py(py, cell)?));
+            }
+        }
+        // Also check sheet top_drivers and top_outputs (which include passthroughs
+        // that might not be in the filtered cells list)
+        for sheet_topo in &full.sheets {
+            for cell in sheet_topo
+                .top_drivers
+                .iter()
+                .chain(sheet_topo.top_outputs.iter())
+            {
+                if cell.sheet == sheet && cell.row == row && cell.col == col {
+                    return Ok(Some(cell_topology_to_py(py, cell)?));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn get_value(
         &self,
         py: Python<'_>,
@@ -622,6 +669,112 @@ impl PyWorkbook {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("lock: {e}")))?;
         f(&mut wb)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Topology → Python dict helpers
+// ---------------------------------------------------------------------------
+
+fn cell_topology_to_py(
+    py: Python<'_>,
+    cell: &formualizer::eval::engine::topology::CellTopology,
+) -> PyResult<PyObject> {
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("sheet", &cell.sheet)?;
+    dict.set_item("row", cell.row)?;
+    dict.set_item("col", cell.col)?;
+    dict.set_item("address", &cell.address)?;
+    dict.set_item("classification", cell.classification.as_str())?;
+    dict.set_item("score", cell.score)?;
+    dict.set_item("fan_out", cell.fan_out)?;
+    dict.set_item("fan_in", cell.fan_in)?;
+    dict.set_item("downstream_reach", cell.downstream_reach)?;
+    dict.set_item("upstream_depth", cell.upstream_depth)?;
+    dict.set_item("is_cross_sheet", cell.is_cross_sheet)?;
+    dict.set_item("has_formula", cell.has_formula)?;
+    Ok(dict.into())
+}
+
+fn sheet_topology_to_py(
+    py: Python<'_>,
+    sheet: &formualizer::eval::engine::topology::SheetTopology,
+) -> PyResult<PyObject> {
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("name", &sheet.name)?;
+    dict.set_item("vertex_count", sheet.vertex_count)?;
+    dict.set_item("formula_count", sheet.formula_count)?;
+    dict.set_item("key_driver_count", sheet.key_driver_count)?;
+    dict.set_item("summary_output_count", sheet.summary_output_count)?;
+    dict.set_item("island_count", sheet.island_count)?;
+
+    let drivers = pyo3::types::PyList::empty(py);
+    for d in &sheet.top_drivers {
+        drivers.append(cell_topology_to_py(py, d)?)?;
+    }
+    dict.set_item("top_drivers", drivers)?;
+
+    let outputs = pyo3::types::PyList::empty(py);
+    for o in &sheet.top_outputs {
+        outputs.append(cell_topology_to_py(py, o)?)?;
+    }
+    dict.set_item("top_outputs", outputs)?;
+
+    let feeds: Vec<&str> = sheet.feeds_sheets.iter().map(|s| s.as_str()).collect();
+    dict.set_item("feeds_sheets", feeds)?;
+    let fed_by: Vec<&str> = sheet.fed_by_sheets.iter().map(|s| s.as_str()).collect();
+    dict.set_item("fed_by_sheets", fed_by)?;
+
+    Ok(dict.into())
+}
+
+fn topology_to_py(
+    py: Python<'_>,
+    topo: &formualizer::eval::engine::topology::TopologyAnalysis,
+) -> PyResult<PyObject> {
+    let result = pyo3::types::PyDict::new(py);
+
+    // cells
+    let cells = pyo3::types::PyList::empty(py);
+    for c in &topo.cells {
+        cells.append(cell_topology_to_py(py, c)?)?;
+    }
+    result.set_item("cells", cells)?;
+
+    // sheets
+    let sheets = pyo3::types::PyList::empty(py);
+    for s in &topo.sheets {
+        sheets.append(sheet_topology_to_py(py, s)?)?;
+    }
+    result.set_item("sheets", sheets)?;
+
+    // model
+    let model = pyo3::types::PyDict::new(py);
+    model.set_item("total_vertices", topo.model.total_vertices)?;
+    model.set_item("total_formulas", topo.model.total_formulas)?;
+    model.set_item("total_islands", topo.model.total_islands)?;
+
+    let drivers = pyo3::types::PyList::empty(py);
+    for d in &topo.model.top_drivers {
+        drivers.append(cell_topology_to_py(py, d)?)?;
+    }
+    model.set_item("top_drivers", drivers)?;
+
+    let outputs = pyo3::types::PyList::empty(py);
+    for o in &topo.model.top_outputs {
+        outputs.append(cell_topology_to_py(py, o)?)?;
+    }
+    model.set_item("top_outputs", outputs)?;
+
+    let edges = pyo3::types::PyList::empty(py);
+    for (src, tgt) in &topo.model.sheet_edges {
+        let pair = pyo3::types::PyTuple::new(py, &[src.as_str(), tgt.as_str()])?;
+        edges.append(pair)?;
+    }
+    model.set_item("sheet_edges", edges)?;
+
+    result.set_item("model", model)?;
+
+    Ok(result.into())
 }
 
 fn resolve_workbook_config(

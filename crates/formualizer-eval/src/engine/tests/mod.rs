@@ -71,5 +71,6 @@ mod sumifs_arrow_edits;
 mod sumifs_arrow_fastpath;
 mod sumifs_cached_mask_padding;
 mod indirect_tests;
+mod topology_tests;
 mod used_bounds_cache;
 mod whole_column_sumifs;

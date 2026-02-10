@@ -615,6 +615,16 @@ impl DependencyGraph {
         &self.data_store
     }
 
+    /// Read-only access to the vertex store for topology analysis.
+    pub fn store_ref(&self) -> &VertexStore {
+        &self.store
+    }
+
+    /// Read-only access to the edge storage for topology analysis.
+    pub fn edges_ref(&self) -> &CsrMutableEdges {
+        &self.edges
+    }
+
     /// Converts a `CellRef` to a fully qualified A1-style string (e.g., "SheetName!A1").
     pub fn to_a1(&self, cell_ref: CellRef) -> String {
         format!("{}!{}", self.sheet_name(cell_ref.sheet_id), cell_ref.coord)

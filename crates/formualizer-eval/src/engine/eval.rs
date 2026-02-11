@@ -1691,15 +1691,15 @@ where
                 let value = self.evaluate_named_scalar(vertex_id, sheet_id)?;
                 return Ok(value);
             }
-            VertexKind::NamedArray => {
-                return Err(ExcelError::new(ExcelErrorKind::NImpl)
-                    .with_message("Array named ranges not yet implemented"));
-            }
-            VertexKind::InfiniteRange
+            VertexKind::NamedArray
+            | VertexKind::InfiniteRange
             | VertexKind::Range
             | VertexKind::External
             | VertexKind::Table => {
-                // Not directly evaluatable here; return stored or 0
+                // Not directly evaluatable here; return stored or 0.
+                // NamedArray vertices act as dependency anchors — their
+                // referenced cells are evaluated via the dependency graph
+                // and read from the Arrow store at formula evaluation time.
                 if let Some(value) = self.graph.get_value(vertex_id) {
                     return Ok(value.clone());
                 } else {
@@ -2786,9 +2786,12 @@ where
             if !self.graph.vertex_exists(v) {
                 continue;
             }
-            // Only schedule dirty/volatile formulas
+            // Only schedule dirty/volatile formulas and named ranges
             match self.graph.get_vertex_kind(v) {
-                VertexKind::FormulaScalar | VertexKind::FormulaArray => {
+                VertexKind::FormulaScalar
+                | VertexKind::FormulaArray
+                | VertexKind::NamedScalar
+                | VertexKind::NamedArray => {
                     if self.graph.is_dirty(v) || self.graph.is_volatile(v) {
                         to_evaluate.insert(v);
                     }
@@ -2800,7 +2803,10 @@ where
             for dep in self.graph.get_dependencies(v) {
                 if self.graph.vertex_exists(dep) {
                     match self.graph.get_vertex_kind(dep) {
-                        VertexKind::FormulaScalar | VertexKind::FormulaArray => {
+                        VertexKind::FormulaScalar
+                        | VertexKind::FormulaArray
+                        | VertexKind::NamedScalar
+                        | VertexKind::NamedArray => {
                             if !visited.contains(&dep) {
                                 stack.push(dep);
                             }
@@ -3489,8 +3495,12 @@ where
                         let interpreter = Interpreter::new_with_cell(self, sheet_name, cell_ref);
                         interpreter.evaluate_ast(ast).map(|cv| cv.into_literal())
                     }
-                    NamedDefinition::Range(_) => Err(ExcelError::new(ExcelErrorKind::NImpl)
-                        .with_message("Array named ranges not yet implemented".to_string())),
+                    NamedDefinition::Range(_) => {
+                        // NamedArray vertices act as dependency anchors;
+                        // their cells are read from the Arrow store at
+                        // formula evaluation time.
+                        Ok(LiteralValue::Int(0))
+                    }
                 };
             }
             _ => {
